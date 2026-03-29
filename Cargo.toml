@@ -1,0 +1,11 @@
+[package]
+name = "dist_simulation"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hdf5 = { package = "hdf5-metno", version = "0.10", features = ["static", "zlib"] }
+ndarray = "0.15"
+rand = "0.9"
+rand_distr = "0.5"
+rayon = "1.10"

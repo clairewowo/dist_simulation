@@ -1,0 +1,345 @@
+use hdf5::File;
+use rand::prelude::*;
+use rand_distr::{Distribution, Normal};
+use std::time::Instant;
+
+#[derive(Clone, Copy, Debug)]
+struct Config {
+    n_train: usize,
+    n_test: usize,
+    dim: usize,
+    n_clusters: usize,
+    n_superclusters: usize,
+    gt_k: usize,
+    center_radius: f32,
+    supercluster_sigma: f32,
+    local_sigma: f32,
+    output: &'static str,
+    seed: u64,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            n_train: 70_000,
+            n_test: 10_000,
+            dim: 768,
+            n_clusters: 256,
+            n_superclusters: 24,
+            gt_k: 100,
+            center_radius: 5.0,
+            supercluster_sigma: 3.5,
+            local_sigma: 0.85,
+            output: "skewed-70000-euclidean.hdf5",
+            seed: 42,
+        }
+    }
+}
+
+fn l2(a: &[f32], b: &[f32]) -> f32 {
+    let mut s = 0.0f32;
+    for i in 0..a.len() {
+        let d = a[i] - b[i];
+        s += d * d;
+    }
+    s.sqrt()
+}
+
+fn flatten_rows(rows: &[Vec<f32>]) -> Vec<f32> {
+    let total: usize = rows.iter().map(|r| r.len()).sum();
+    let mut out = Vec::with_capacity(total);
+    for r in rows {
+        out.extend_from_slice(r);
+    }
+    out
+}
+
+fn flatten_rows_i32(rows: &[Vec<i32>]) -> Vec<i32> {
+    let total: usize = rows.iter().map(|r| r.len()).sum();
+    let mut out = Vec::with_capacity(total);
+    for r in rows {
+        out.extend_from_slice(r);
+    }
+    out
+}
+
+fn assign_cluster_sizes(total: usize, n_clusters: usize) -> Vec<usize> {
+    let base = total / n_clusters;
+    let rem = total % n_clusters;
+    let mut sizes = vec![base; n_clusters];
+    for i in 0..rem {
+        sizes[i] += 1;
+    }
+    sizes
+}
+
+fn sample_unit_vector(dim: usize, rng: &mut StdRng) -> Vec<f32> {
+    let normal = Normal::<f32>::new(0.0, 1.0).unwrap();
+    let mut v = vec![0.0f32; dim];
+    let mut norm2 = 0.0f32;
+    for x in &mut v {
+        *x = normal.sample(rng);
+        norm2 += *x * *x;
+    }
+    let norm = norm2.sqrt().max(1e-12);
+    for x in &mut v {
+        *x /= norm;
+    }
+    v
+}
+
+fn sample_gaussian_point(center: &[f32], sigma: f32, rng: &mut StdRng) -> Vec<f32> {
+    let normal = Normal::<f32>::new(0.0, sigma).unwrap();
+    center.iter().map(|&c| c + normal.sample(rng)).collect()
+}
+
+fn build_cluster_centers(cfg: &Config, rng: &mut StdRng) -> Vec<Vec<f32>> {
+    let per_super = cfg.n_clusters.div_ceil(cfg.n_superclusters);
+
+    let mut super_centers = Vec::with_capacity(cfg.n_superclusters);
+    for _ in 0..cfg.n_superclusters {
+        let dir = sample_unit_vector(cfg.dim, rng);
+        let center: Vec<f32> = dir.into_iter().map(|x| x * cfg.center_radius).collect();
+        super_centers.push(center);
+    }
+
+    let mut cluster_centers = Vec::with_capacity(cfg.n_clusters);
+    for sc in 0..cfg.n_superclusters {
+        for _ in 0..per_super {
+            if cluster_centers.len() >= cfg.n_clusters {
+                break;
+            }
+            let center = sample_gaussian_point(&super_centers[sc], cfg.supercluster_sigma, rng);
+            cluster_centers.push(center);
+        }
+    }
+    cluster_centers
+}
+
+fn sample_dataset(
+    n_points: usize,
+    cfg: &Config,
+    cluster_centers: &[Vec<f32>],
+    rng: &mut StdRng,
+) -> (Vec<Vec<f32>>, Vec<usize>) {
+    let cluster_sizes = assign_cluster_sizes(n_points, cfg.n_clusters);
+
+    let mut vectors = Vec::with_capacity(n_points);
+    let mut labels = Vec::with_capacity(n_points);
+
+    for (cid, &sz) in cluster_sizes.iter().enumerate() {
+        for _ in 0..sz {
+            vectors.push(sample_gaussian_point(
+                &cluster_centers[cid],
+                cfg.local_sigma,
+                rng,
+            ));
+            labels.push(cid);
+        }
+    }
+
+    let mut perm: Vec<usize> = (0..n_points).collect();
+    perm.shuffle(rng);
+
+    let shuffled_vectors: Vec<Vec<f32>> = perm.iter().map(|&i| vectors[i].clone()).collect();
+    let shuffled_labels: Vec<usize> = perm.iter().map(|&i| labels[i]).collect();
+
+    (shuffled_vectors, shuffled_labels)
+}
+
+fn topk_truth(train: &[Vec<f32>], test: &[Vec<f32>], k: usize) -> (Vec<Vec<i32>>, Vec<Vec<f32>>) {
+    let mut all_neighbors = Vec::with_capacity(test.len());
+    let mut all_distances = Vec::with_capacity(test.len());
+
+    for q in test {
+        let mut pairs: Vec<(usize, f32)> = train
+            .iter()
+            .enumerate()
+            .map(|(i, x)| (i, l2(q, x)))
+            .collect();
+
+        pairs.sort_by(|a, b| a.1.total_cmp(&b.1));
+        pairs.truncate(k);
+
+        let neigh: Vec<i32> = pairs.iter().map(|(i, _)| *i as i32).collect();
+        let dist: Vec<f32> = pairs.iter().map(|(_, d)| *d).collect();
+
+        all_neighbors.push(neigh);
+        all_distances.push(dist);
+    }
+
+    (all_neighbors, all_distances)
+}
+
+fn summarize_pair_distribution(
+    train: &[Vec<f32>],
+    labels: &[usize],
+    rng: &mut StdRng,
+    n_samples: usize,
+) {
+    let mut all = Vec::with_capacity(n_samples);
+    let mut same = Vec::new();
+    let mut diff = Vec::new();
+
+    for _ in 0..n_samples {
+        let i = rng.gen_range(0..train.len());
+        let j = rng.gen_range(0..train.len());
+        if i == j {
+            continue;
+        }
+        let d = l2(&train[i], &train[j]);
+        all.push(d);
+        if labels[i] == labels[j] {
+            same.push(d);
+        } else {
+            diff.push(d);
+        }
+    }
+
+    fn quantiles(mut xs: Vec<f32>) -> Option<(f32, f32, f32, f32, f32)> {
+        if xs.is_empty() {
+            return None;
+        }
+        xs.sort_by(|a, b| a.total_cmp(b));
+        let n = xs.len();
+        let q = |p: f32| -> f32 {
+            let idx = ((n - 1) as f32 * p).round() as usize;
+            xs[idx]
+        };
+        Some((q(0.01), q(0.10), q(0.50), q(0.90), q(0.99)))
+    }
+
+    if let Some((p01, p10, p50, p90, p99)) = quantiles(all.clone()) {
+        println!(
+            "\nDistance diagnostics (Euclidean)\n  all      p01={:.4} p10={:.4} p50={:.4} p90={:.4} p99={:.4}",
+            p01, p10, p50, p90, p99
+        );
+    }
+    if let Some((p01, p10, p50, p90, p99)) = quantiles(same) {
+        println!(
+            "  same-cl  p01={:.4} p10={:.4} p50={:.4} p90={:.4} p99={:.4}",
+            p01, p10, p50, p90, p99
+        );
+    }
+    if let Some((p01, p10, p50, p90, p99)) = quantiles(diff) {
+        println!(
+            "  diff-cl  p01={:.4} p10={:.4} p50={:.4} p90={:.4} p99={:.4}",
+            p01, p10, p50, p90, p99
+        );
+    }
+
+    let mut sorted = all;
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    if !sorted.is_empty() {
+        let p05 = sorted[((sorted.len() - 1) as f32 * 0.05).round() as usize];
+        let p95 = sorted[((sorted.len() - 1) as f32 * 0.95).round() as usize];
+
+        let below = sorted.iter().filter(|&&x| x < p05).count();
+        let middle = sorted.iter().filter(|&&x| x >= p05 && x <= p95).count();
+        let above = sorted.iter().filter(|&&x| x > p95).count();
+
+        println!(
+            "  crude skew bins using [p05, p95]: below={} middle={} above={}",
+            below, middle, above
+        );
+    }
+}
+
+fn write_hdf5(
+    path: &str,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    distances: &[Vec<f32>],
+) -> hdf5::Result<()> {
+    let file = File::create(path)?;
+
+    let train_flat = flatten_rows(train);
+    let test_flat = flatten_rows(test);
+    let neighbors_flat = flatten_rows_i32(neighbors);
+    let distances_flat = flatten_rows(distances);
+
+    let train_rows = train.len();
+    let train_dim = if train.is_empty() { 0 } else { train[0].len() };
+
+    let test_rows = test.len();
+    let test_dim = if test.is_empty() { 0 } else { test[0].len() };
+
+    let neigh_rows = neighbors.len();
+    let neigh_dim = if neighbors.is_empty() { 0 } else { neighbors[0].len() };
+
+    let dist_rows = distances.len();
+    let dist_dim = if distances.is_empty() { 0 } else { distances[0].len() };
+
+    let ds_train = file
+        .new_dataset::<f32>()
+        .shape((train_rows, train_dim))
+        .create("train")?;
+    ds_train.write_raw(&train_flat)?;
+
+    let ds_test = file
+        .new_dataset::<f32>()
+        .shape((test_rows, test_dim))
+        .create("test")?;
+    ds_test.write_raw(&test_flat)?;
+
+    let ds_neighbors = file
+        .new_dataset::<i32>()
+        .shape((neigh_rows, neigh_dim))
+        .create("neighbors")?;
+    ds_neighbors.write_raw(&neighbors_flat)?;
+
+    let ds_distances = file
+        .new_dataset::<f32>()
+        .shape((dist_rows, dist_dim))
+        .create("distances")?;
+    ds_distances.write_raw(&distances_flat)?;
+
+    Ok(())
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let cfg = Config::default();
+
+    println!("Generating skewed Euclidean dataset");
+    println!("  n_train            = {}", cfg.n_train);
+    println!("  n_test             = {}", cfg.n_test);
+    println!("  dim                = {}", cfg.dim);
+    println!("  n_clusters         = {}", cfg.n_clusters);
+    println!("  n_superclusters    = {}", cfg.n_superclusters);
+    println!("  gt_k               = {}", cfg.gt_k);
+    println!("  center_radius      = {}", cfg.center_radius);
+    println!("  local_sigma        = {}", cfg.local_sigma);
+    println!("  supercluster_sigma = {}", cfg.supercluster_sigma);
+    println!("  output             = {}", cfg.output);
+
+    let t0 = Instant::now();
+
+    let mut rng = StdRng::seed_from_u64(cfg.seed);
+    let centers = build_cluster_centers(&cfg, &mut rng);
+
+    let (train, train_labels) = sample_dataset(cfg.n_train, &cfg, &centers, &mut rng);
+    let (test, _test_labels) = sample_dataset(cfg.n_test, &cfg, &centers, &mut rng);
+
+    println!("Sampling done in {:?}", t0.elapsed());
+
+    let t1 = Instant::now();
+    let (neighbors, distances) = topk_truth(&train, &test, cfg.gt_k);
+    println!("Ground truth done in {:?}", t1.elapsed());
+
+    summarize_pair_distribution(&train, &train_labels, &mut rng, 200_000);
+
+    println!(
+        "\nGenerated file should behave like: many very-near intra-cluster pairs,\n\
+         many very-far inter-cluster pairs, and relatively fewer medium-distance pairs.\n\
+         Increase `center_radius` or decrease `local_sigma` to make it more extreme."
+    );
+
+    let t2 = Instant::now();
+    write_hdf5(cfg.output, &train, &test, &neighbors, &distances)?;
+    println!("HDF5 write done in {:?}", t2.elapsed());
+    println!("Total done in {:?}", t0.elapsed());
+    println!("Wrote {}", cfg.output);
+
+    Ok(())
+}
