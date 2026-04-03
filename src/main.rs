@@ -2,8 +2,9 @@ use hdf5::File;
 use rand::prelude::*;
 use rand_distr::{Distribution, Normal};
 use std::time::Instant;
+use clap::{Arg, ArgAction, Command};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct Config {
     n_train: usize,
     n_test: usize,
@@ -14,7 +15,7 @@ struct Config {
     center_radius: f32,
     supercluster_sigma: f32,
     local_sigma: f32,
-    output: &'static str,
+    output: String,
     seed: u64,
 }
 
@@ -30,9 +31,28 @@ impl Default for Config {
             center_radius: 5.0,
             supercluster_sigma: 3.5,
             local_sigma: 0.85,
-            output: "skewed-70000-euclidean.hdf5",
+            output: "skewed-70000-euclidean.hdf5".to_string(),
             seed: 42,
         }
+    }
+}
+
+impl Config {
+    pub fn new(x_skew: f32, n_clusters: usize, n_superclusters: usize, seed: u64, output: &String) -> Self {
+        Self {
+            n_train: 70_000,
+            n_test: 10_000,
+            dim: 768,
+            n_clusters: n_clusters,
+            n_superclusters: n_superclusters,
+            gt_k: 100,
+            center_radius: x_skew,
+            supercluster_sigma: 3.5,
+            local_sigma: 1.0 - 0.03 * x_skew,
+            output: output.clone(),
+            seed: seed,
+        }
+        
     }
 }
 
@@ -64,12 +84,20 @@ fn flatten_rows_i32(rows: &[Vec<i32>]) -> Vec<i32> {
 }
 
 fn assign_cluster_sizes(total: usize, n_clusters: usize) -> Vec<usize> {
-    let base = total / n_clusters;
-    let rem = total % n_clusters;
-    let mut sizes = vec![base; n_clusters];
-    for i in 0..rem {
-        sizes[i] += 1;
+    // Generate random-ish weights using cluster index as seed
+    let mut sizes = Vec::with_capacity(n_clusters);
+    let mut remaining = total;
+
+    for i in 0..n_clusters {
+        let size = if i == n_clusters - 1 {
+            remaining // last cluster gets whatever is left
+        } else {
+            remaining / 2
+        };
+        sizes.push(size);
+        remaining -= size;
     }
+
     sizes
 }
 
@@ -246,7 +274,7 @@ fn summarize_pair_distribution(
 }
 
 fn write_hdf5(
-    path: &str,
+    path: String,
     train: &[Vec<f32>],
     test: &[Vec<f32>],
     neighbors: &[Vec<i32>],
@@ -299,7 +327,56 @@ fn write_hdf5(
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let cfg = Config::default();
+    let matches = Command::new("Distance simulation")
+        .arg(
+            Arg::new("skew")
+            .long("slew")
+            .help("Controls skewness: central radius =x, local_sigma = 1-0.3x")
+            .required(false)
+            .default_value("5.0")
+            .value_parser(clap::value_parser!(f32))
+            .action(ArgAction::Set)
+        )
+        .arg(
+            Arg::new("n_clusters")
+            .long("n_clusters")
+            .required(false)
+            .default_value("256")
+            .value_parser(clap::value_parser!(usize))
+            .action(ArgAction::Set)
+        )
+        .arg(
+            Arg::new("n_superclusters")
+            .long("n_superclusters")
+            .required(false)
+            .default_value("24")
+            .value_parser(clap::value_parser!(usize))
+            .action(ArgAction::Set)
+        )
+        .arg(
+            Arg::new("output_hdf5")
+            .long("output_hdf5")
+            .required(false)
+            .default_value("skewed-70000-euclidean.hdf5")
+            .action(ArgAction::Set)
+        )
+        .arg(
+            Arg::new("seed")
+            .short('s')
+            .long("seed")
+            .help("Random seed")
+            .required(false)
+            .value_parser(clap::value_parser!(u64))
+            .default_value("42")
+            .action(ArgAction::Set)
+        ).get_matches();
+
+    let skew = *matches.get_one::<f32>("skew").unwrap();
+    let num_clusters = *matches.get_one::<usize>("n_clusters").unwrap();
+    let num_superclusters = *matches.get_one::<usize>("n_superclusters").unwrap();
+    let output = matches.get_one::<String>("output_hdf5").unwrap();
+    let seed = *matches.get_one::<u64>("seed").unwrap();
+    let cfg = Config::new(skew, num_clusters, num_superclusters, seed, output);
 
     println!("Generating skewed Euclidean dataset");
     println!("  n_train            = {}", cfg.n_train);
@@ -339,7 +416,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     write_hdf5(cfg.output, &train, &test, &neighbors, &distances)?;
     println!("HDF5 write done in {:?}", t2.elapsed());
     println!("Total done in {:?}", t0.elapsed());
-    println!("Wrote {}", cfg.output);
+    println!("Wrote {}", output);
 
     Ok(())
 }
