@@ -382,8 +382,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .action(ArgAction::Set)
         )
         .arg(
-            Arg::new("output_hdf5")
-            .long("output_hdf5")
+            Arg::new("output")
+            .long("output")
             .required(false)
             .default_value("skewed-70000-euclidean.hdf5")
             .action(ArgAction::Set)
@@ -425,7 +425,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let num_clusters = *matches.get_one::<usize>("n_clusters").unwrap();
     let num_superclusters = *matches.get_one::<usize>("n_superclusters").unwrap();
-    let output = matches.get_one::<String>("output_hdf5").unwrap();
+    let output = matches.get_one::<String>("output").unwrap();
     let seed = *matches.get_one::<u64>("seed").unwrap();
     let center_radius = *matches.get_one::<f32>("center_radius").unwrap();
     let local_sigma = *matches.get_one::<f32>("local_sigma").unwrap();
