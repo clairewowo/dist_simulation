@@ -38,7 +38,8 @@ impl Default for Config {
 }
 
 impl Config {
-    pub fn new(x_skew: f32, n_clusters: usize, n_superclusters: usize, seed: u64, output: &String) -> Self {
+    pub fn new(n_clusters: usize, n_superclusters: usize, seed: u64, output: &String, 
+    center_rad: f32, local_sig: f32) -> Self {
         Self {
             n_train: 70_000,
             n_test: 10_000,
@@ -46,9 +47,24 @@ impl Config {
             n_clusters: n_clusters,
             n_superclusters: n_superclusters,
             gt_k: 100,
-            center_radius: x_skew,
+            center_radius: center_rad,
             supercluster_sigma: 3.5,
-            local_sigma: 1.0 - 0.03 * x_skew,
+            local_sigma: local_sig,
+            output: output.clone(),
+            seed: seed,
+        }
+    }
+    pub fn new_x_skew(x_skew: f32, n_clusters: usize, n_superclusters: usize, seed: u64, output: &String) -> Self {
+        Self {
+            n_train: 70_000,
+            n_test: 10_000,
+            dim: 768,
+            n_clusters: n_clusters,
+            n_superclusters: n_superclusters,
+            gt_k: 100,
+            center_radius: 5.0 + x_skew,
+            supercluster_sigma: 3.5,
+            local_sigma: 0.85 - 0.1 * x_skew,
             output: output.clone(),
             seed: seed,
         }
@@ -83,22 +99,34 @@ fn flatten_rows_i32(rows: &[Vec<i32>]) -> Vec<i32> {
     out
 }
 
-fn assign_cluster_sizes(total: usize, n_clusters: usize) -> Vec<usize> {
-    // Generate random-ish weights using cluster index as seed
-    let mut sizes = Vec::with_capacity(n_clusters);
-    let mut remaining = total;
+fn assign_cluster_sizes(total: usize, n_clusters: usize, even: &bool) -> Vec<usize> {
+    // uneven cluster sizes
+    if !*even { 
+        // Generate random-ish weights using cluster index as seed
+        let mut sizes = Vec::with_capacity(n_clusters);
+        let mut remaining = total;
 
-    for i in 0..n_clusters {
-        let size = if i == n_clusters - 1 {
-            remaining // last cluster gets whatever is left
-        } else {
-            remaining / 2
-        };
-        sizes.push(size);
-        remaining -= size;
+        for i in 0..n_clusters {
+            let size = if i == n_clusters - 1 {
+                remaining // last cluster gets whatever is left
+            } else {
+                remaining / 2
+            };
+            sizes.push(size);
+            remaining -= size;
+        }
+        sizes
     }
-
-    sizes
+    else {
+        let base = total / n_clusters;
+        let rem = total % n_clusters;
+        let mut sizes = vec![base; n_clusters];
+        for i in 0..rem {
+            sizes[i] += 1;
+        }
+        sizes
+    }
+    
 }
 
 fn sample_unit_vector(dim: usize, rng: &mut StdRng) -> Vec<f32> {
@@ -149,8 +177,9 @@ fn sample_dataset(
     cfg: &Config,
     cluster_centers: &[Vec<f32>],
     rng: &mut StdRng,
+    even: &bool,
 ) -> (Vec<Vec<f32>>, Vec<usize>) {
-    let cluster_sizes = assign_cluster_sizes(n_points, cfg.n_clusters);
+    let cluster_sizes = assign_cluster_sizes(n_points, cfg.n_clusters, even);
 
     let mut vectors = Vec::with_capacity(n_points);
     let mut labels = Vec::with_capacity(n_points);
@@ -328,12 +357,11 @@ fn write_hdf5(
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let matches = Command::new("Distance simulation")
-        .arg(
+        .arg( // parameter to control skewness. larger x = more skew. -5 > x > 8
             Arg::new("skew")
-            .long("slew")
-            .help("Controls skewness: central radius =x, local_sigma = 1-0.3x")
+            .long("skew")
+            .help("Controls skewness: central radius = 5 + x, local_sigma = 0.85 - 0.1x")
             .required(false)
-            .default_value("5.0")
             .value_parser(clap::value_parser!(f32))
             .action(ArgAction::Set)
         )
@@ -361,6 +389,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .action(ArgAction::Set)
         )
         .arg(
+            Arg::new("center_radius")
+            .long("center_radius")
+            .required(false)
+            .default_value("5.0")
+            .value_parser(clap::value_parser!(f32))
+            .action(ArgAction::Set)
+        )
+        .arg(
+            Arg::new("local_sigma")
+            .long("local_sigma")
+            .required(false)
+            .default_value("0.85")
+            .value_parser(clap::value_parser!(f32))
+            .action(ArgAction::Set)
+        )
+        .arg( // controls whether cluster sizes are even
+            Arg::new("even")
+            .long("even")
+            .required(false)
+            .default_value("true")
+            .value_parser(clap::value_parser!(bool))
+            .action(ArgAction::Set)
+        )
+        .arg(
             Arg::new("seed")
             .short('s')
             .long("seed")
@@ -371,12 +423,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .action(ArgAction::Set)
         ).get_matches();
 
-    let skew = *matches.get_one::<f32>("skew").unwrap();
     let num_clusters = *matches.get_one::<usize>("n_clusters").unwrap();
     let num_superclusters = *matches.get_one::<usize>("n_superclusters").unwrap();
     let output = matches.get_one::<String>("output_hdf5").unwrap();
     let seed = *matches.get_one::<u64>("seed").unwrap();
-    let cfg = Config::new(skew, num_clusters, num_superclusters, seed, output);
+    let center_radius = *matches.get_one::<f32>("center_radius").unwrap();
+    let local_sigma = *matches.get_one::<f32>("local_sigma").unwrap();
+    let even = matches.get_one::<bool>("even").unwrap();
+
+    let cfg: Config;
+    if let Some(skew) = matches.get_one::<f32>("skew") {
+        // skew is a general measure of skewness changing both center radius and local sigma at the same time
+        cfg = Config::new_x_skew(*skew, num_clusters, num_superclusters, seed, output);
+    }
+    else {
+        // if skew is not provided, assign values for local sigma and center radius
+        cfg = Config::new(num_clusters, num_superclusters, seed, output, center_radius, local_sigma);
+    }
+    
 
     println!("Generating skewed Euclidean dataset");
     println!("  n_train            = {}", cfg.n_train);
@@ -395,8 +459,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut rng = StdRng::seed_from_u64(cfg.seed);
     let centers = build_cluster_centers(&cfg, &mut rng);
 
-    let (train, train_labels) = sample_dataset(cfg.n_train, &cfg, &centers, &mut rng);
-    let (test, _test_labels) = sample_dataset(cfg.n_test, &cfg, &centers, &mut rng);
+    let (train, train_labels) = sample_dataset(cfg.n_train, &cfg, &centers, &mut rng, even);
+    let (test, _test_labels) = sample_dataset(cfg.n_test, &cfg, &centers, &mut rng, even);
 
     println!("Sampling done in {:?}", t0.elapsed());
 
