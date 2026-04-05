@@ -40,6 +40,11 @@ impl Default for Config {
 impl Config {
     pub fn new(n_clusters: usize, n_superclusters: usize, seed: u64, output: &String, 
     center_rad: f32, local_sig: f32) -> Self {
+        let mut output_file = output.clone();
+        if !output.ends_with(".hdf5") {
+            output_file += ".hdf5";
+        }
+        
         Self {
             n_train: 70_000,
             n_test: 10_000,
@@ -50,11 +55,15 @@ impl Config {
             center_radius: center_rad,
             supercluster_sigma: 3.5,
             local_sigma: local_sig,
-            output: output.clone(),
+            output: output_file,
             seed: seed,
         }
     }
     pub fn new_x_skew(x_skew: f32, n_clusters: usize, n_superclusters: usize, seed: u64, output: &String) -> Self {
+        let mut output_file = output.clone();
+        if !output.ends_with(".hdf5") {
+            output_file += ".hdf5";
+        }
         Self {
             n_train: 70_000,
             n_test: 10_000,
@@ -65,7 +74,7 @@ impl Config {
             center_radius: 5.0 + x_skew,
             supercluster_sigma: 3.5,
             local_sigma: 0.85 - 0.1 * x_skew,
-            output: output.clone(),
+            output: output_file,
             seed: seed,
         }
         
@@ -383,6 +392,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .arg(
             Arg::new("output")
+            .short('o')
             .long("output")
             .required(false)
             .default_value("skewed-70000-euclidean.hdf5")
