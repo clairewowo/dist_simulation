@@ -39,7 +39,7 @@ impl Default for Config {
 
 impl Config {
     pub fn new(n_clusters: usize, n_superclusters: usize, seed: u64, output: &String, 
-    center_rad: f32, local_sig: f32) -> Self {
+    center_rad: f32, local_sig: f32, super_sigma: f32) -> Self {
         let mut output_file = output.clone();
         if !output.ends_with(".hdf5") {
             output_file += ".hdf5";
@@ -53,7 +53,7 @@ impl Config {
             n_superclusters: n_superclusters,
             gt_k: 100,
             center_radius: center_rad,
-            supercluster_sigma: 3.5,
+            supercluster_sigma: super_sigma,
             local_sigma: local_sig,
             output: output_file,
             seed: seed,
@@ -414,6 +414,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .value_parser(clap::value_parser!(f32))
             .action(ArgAction::Set)
         )
+        .arg(
+            Arg::new("supercluster_sigma")
+            .long("supercluster_sigma")
+            .required(false)
+            .default_value("3.5")
+            .value_parser(clap::value_parser!(f32))
+            .action(ArgAction::Set)
+        )
         .arg( // controls whether cluster sizes are even
             Arg::new("even")
             .long("even")
@@ -440,6 +448,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let center_radius = *matches.get_one::<f32>("center_radius").unwrap();
     let local_sigma = *matches.get_one::<f32>("local_sigma").unwrap();
     let even = matches.get_one::<bool>("even").unwrap();
+    let supercluster_sigma = *matches.get_one::<f32>("supercluster_sigma").unwrap();
 
     let cfg: Config;
     if let Some(skew) = matches.get_one::<f32>("skew") {
@@ -448,7 +457,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     else {
         // if skew is not provided, assign values for local sigma and center radius
-        cfg = Config::new(num_clusters, num_superclusters, seed, output, center_radius, local_sigma);
+        cfg = Config::new(num_clusters, num_superclusters, seed, output, center_radius, local_sigma, supercluster_sigma);
     }
     
 
