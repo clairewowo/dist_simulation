@@ -73,7 +73,7 @@ impl Config {
             n_superclusters: n_superclusters,
             gt_k: 100,
             center_radius: 5.0 + x_skew,
-            supercluster_sigma: 3.5,
+            supercluster_sigma: 0.5 + 0.1 * x_skew,
             local_sigma: 0.85 - 0.1 * x_skew,
             output: output_file,
             seed: seed,
@@ -373,7 +373,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .arg( // parameter to control skewness. larger x = more skew. -5 > x > 8
             Arg::new("skew")
             .long("skew")
-            .help("Controls skewness: central radius = 5 + x, local_sigma = 0.85 - 0.1x")
+            .help("Controls skewness: central radius = 5 + x, local_sigma = 0.85 - 0.1x, supercluster_sigma = 0.5 + 0.1x")
             .required(false)
             .value_parser(clap::value_parser!(f32))
             .action(ArgAction::Set)
@@ -422,7 +422,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Arg::new("supercluster_sigma")
             .long("supercluster_sigma")
             .required(false)
-            .default_value("3.5")
+            .default_value("0.4")
             .value_parser(clap::value_parser!(f32))
             .action(ArgAction::Set)
         )
