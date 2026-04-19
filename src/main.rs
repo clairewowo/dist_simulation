@@ -73,7 +73,7 @@ impl Config {
             n_superclusters: n_superclusters,
             gt_k: 100,
             center_radius: 5.0 + x_skew,
-            supercluster_sigma: 0.5 + 0.1 * x_skew,
+            supercluster_sigma: 1.0 + 0.2 * x_skew,
             local_sigma: 0.85 - 0.1 * x_skew,
             output: output_file,
             seed: seed,
