@@ -182,7 +182,38 @@ fn build_cluster_centers(cfg: &Config, rng: &mut StdRng) -> Vec<Vec<f32>> {
     cluster_centers
 }
 
-fn sample_dataset(
+fn test_dataset(
+    n_points: usize,
+    cfg: &Config,
+    cluster_centers: &[Vec<f32>], // only one supercluster's centers
+    rng: &mut StdRng,
+    even: &bool,
+) -> (Vec<Vec<f32>>, Vec<usize>) {
+    //let cluster_sizes = assign_cluster_sizes(n_points, cfg.n_clusters, even);
+
+    let mut vectors = Vec::with_capacity(n_points);
+    let mut labels = Vec::with_capacity(n_points);
+
+    for _ in 0..n_points {
+        vectors.push(sample_gaussian_point(
+            &cluster_centers[0],
+            cfg.local_sigma,
+            rng,
+        ));
+        labels.push(0);
+    }
+    
+
+    let mut perm: Vec<usize> = (0..n_points).collect();
+    perm.shuffle(rng);
+
+    let shuffled_vectors: Vec<Vec<f32>> = perm.iter().map(|&i| vectors[i].clone()).collect();
+    let shuffled_labels: Vec<usize> = perm.iter().map(|&i| labels[i]).collect();
+
+    (shuffled_vectors, shuffled_labels)
+}
+
+fn train_dataset(
     n_points: usize,
     cfg: &Config,
     cluster_centers: &[Vec<f32>],
@@ -213,6 +244,8 @@ fn sample_dataset(
 
     (shuffled_vectors, shuffled_labels)
 }
+
+
 
 fn topk_truth(train: &[Vec<f32>], test: &[Vec<f32>], k: usize) -> (Vec<Vec<i32>>, Vec<Vec<f32>>) {
     let results: Vec<(Vec<i32>, Vec<f32>)> = test
@@ -382,7 +415,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Arg::new("n_clusters")
             .long("n_clusters")
             .required(false)
-            .default_value("256")
+            .default_value("6")
             .value_parser(clap::value_parser!(usize))
             .action(ArgAction::Set)
         )
@@ -390,7 +423,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Arg::new("n_superclusters")
             .long("n_superclusters")
             .required(false)
-            .default_value("24")
+            .default_value("3")
             .value_parser(clap::value_parser!(usize))
             .action(ArgAction::Set)
         )
@@ -482,8 +515,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut rng = StdRng::seed_from_u64(cfg.seed);
     let centers = build_cluster_centers(&cfg, &mut rng);
 
-    let (train, train_labels) = sample_dataset(cfg.n_train, &cfg, &centers, &mut rng, even);
-    let (test, _test_labels) = sample_dataset(cfg.n_test, &cfg, &centers, &mut rng, even);
+    let train_centers = centers[0..centers.len() -1].to_vec(); // use the last cluster for testing
+    let test_center = vec![centers[centers.len() - 1].clone()];
+    let (train, train_labels) = train_dataset(cfg.n_train, &cfg, &train_centers, &mut rng, even);
+    let (test, _test_labels) = test_dataset(cfg.n_test, &cfg, &test_center, &mut rng, even);
 
     println!("Sampling done in {:?}", t0.elapsed());
 
