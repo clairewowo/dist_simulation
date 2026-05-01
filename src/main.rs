@@ -66,8 +66,8 @@ impl Config {
             output_file += ".hdf5";
         }
         Self {
-            n_train: 70_000,
-            n_test: 10_000,
+            n_train: 700,
+            n_test: 10,
             dim: 768,
             n_clusters: n_clusters,
             n_superclusters: n_superclusters,
@@ -220,7 +220,7 @@ fn train_dataset(
     rng: &mut StdRng,
     even: &bool,
 ) -> (Vec<Vec<f32>>, Vec<usize>) {
-    let cluster_sizes = assign_cluster_sizes(n_points, cfg.n_clusters, even);
+    let cluster_sizes = assign_cluster_sizes(n_points, cluster_centers.len(), even);
 
     let mut vectors = Vec::with_capacity(n_points);
     let mut labels = Vec::with_capacity(n_points);
@@ -423,7 +423,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Arg::new("n_superclusters")
             .long("n_superclusters")
             .required(false)
-            .default_value("3")
+            .default_value("4")
             .value_parser(clap::value_parser!(usize))
             .action(ArgAction::Set)
         )
