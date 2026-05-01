@@ -66,8 +66,8 @@ impl Config {
             output_file += ".hdf5";
         }
         Self {
-            n_train: 700,
-            n_test: 10,
+            n_train: 70_000,
+            n_test: 10_000,
             dim: 768,
             n_clusters: n_clusters,
             n_superclusters: n_superclusters,
