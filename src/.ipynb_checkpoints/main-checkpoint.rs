@@ -3,7 +3,6 @@ use rand::prelude::*;
 use rand_distr::{Distribution, Normal};
 use std::time::Instant;
 use clap::{Arg, ArgAction, Command};
-use rayon::prelude::*;
 
 #[derive(Clone, Debug)]
 struct Config {
@@ -72,9 +71,9 @@ impl Config {
             n_clusters: n_clusters,
             n_superclusters: n_superclusters,
             gt_k: 100,
-            center_radius: 2.0 + x_skew,
-            supercluster_sigma: 1 + 0.2 * x_skew,
-            local_sigma: 0.6 - 0.1 * x_skew,
+            center_radius: 5.0 + x_skew,
+            supercluster_sigma: 3.5,
+            local_sigma: 0.85 - 0.1 * x_skew,
             output: output_file,
             seed: seed,
         }
@@ -215,28 +214,25 @@ fn sample_dataset(
 }
 
 fn topk_truth(train: &[Vec<f32>], test: &[Vec<f32>], k: usize) -> (Vec<Vec<i32>>, Vec<Vec<f32>>) {
-    let results: Vec<(Vec<i32>, Vec<f32>)> = test
-        .par_iter()
-        .map(|q| {
-            let mut pairs: Vec<(usize, f32)> = train
-                .iter()
-                .enumerate()
-                .map(|(i, x)| (i, l2(q, x)))
-                .collect();
+    let mut all_neighbors = Vec::with_capacity(test.len());
+    let mut all_distances = Vec::with_capacity(test.len());
 
-            pairs.sort_by(|a, b| a.1.total_cmp(&b.1));
-            pairs.truncate(k);
+    for q in test {
+        let mut pairs: Vec<(usize, f32)> = train
+            .iter()
+            .enumerate()
+            .map(|(i, x)| (i, l2(q, x)))
+            .collect();
 
-            let neigh: Vec<i32> = pairs.iter().map(|(i, _)| *i as i32).collect();
-            let dist: Vec<f32> = pairs.iter().map(|(_, d)| *d).collect();
+        pairs.sort_by(|a, b| a.1.total_cmp(&b.1));
+        pairs.truncate(k);
 
-            (neigh, dist)
-        })
-        .collect();
+        let neigh: Vec<i32> = pairs.iter().map(|(i, _)| *i as i32).collect();
+        let dist: Vec<f32> = pairs.iter().map(|(_, d)| *d).collect();
 
-    // unzip into two Vec<Vec<_>>
-    let (all_neighbors, all_distances): (Vec<_>, Vec<_>) =
-        results.into_iter().unzip();
+        all_neighbors.push(neigh);
+        all_distances.push(dist);
+    }
 
     (all_neighbors, all_distances)
 }
@@ -373,7 +369,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .arg( // parameter to control skewness. larger x = more skew. -5 > x > 8
             Arg::new("skew")
             .long("skew")
-            .help("Controls skewness: central radius = 5 + x, local_sigma = 0.85 - 0.1x, supercluster_sigma = 0.5 + 0.1x")
+            .help("Controls skewness: central radius = 5 + x, local_sigma = 0.85 - 0.1x")
             .required(false)
             .value_parser(clap::value_parser!(f32))
             .action(ArgAction::Set)
@@ -422,7 +418,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Arg::new("supercluster_sigma")
             .long("supercluster_sigma")
             .required(false)
-            .default_value("0.4")
+            .default_value("3.5")
             .value_parser(clap::value_parser!(f32))
             .action(ArgAction::Set)
         )
